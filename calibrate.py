@@ -1,3 +1,7 @@
+from textual.events import Enter
+from textual.events import Focus
+from textual.events import Event
+from textual.containers import HorizontalGroup
 import os
 import time
 
@@ -8,7 +12,7 @@ from numpy.typing import NDArray
 
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Center, Middle
+from textual.containers import Container, Center, Middle
 from textual.events import MouseScrollUp, MouseScrollDown
 from textual.validation import Number
 from textual.reactive import reactive
@@ -20,18 +24,20 @@ import yaml
 """
 TODO:
     [x] Camera source selector
-    [ ] Camera column styling
+    [x] Camera column styling
     [x] Importing config
     [x] Exporting config
 """
 
 class Calibration(App):
     SRC_SELECT_ID = "src-select"
+    ADJUSTER_ID = "adjuster"
+    PREVIEW_SIZE = (640, 480)
     DEFAULT_CSS = """
-    #select-container2 {
-        layout: vertical;
-        align: center middle;
-        height: 1fr;
+    #left-container {
+        margin: 1 0;
+    }
+    #right-container {
         margin: 1 0;
     }
 
@@ -102,7 +108,7 @@ class Calibration(App):
         if not ret:
             return
 
-        # resized_image = cv2.resize(frame, (640, 480))
+        resized_image = cv2.resize(frame, self.PREVIEW_SIZE)
         # NOTE(mabay): OpenCV stores its images in BGR format, for some reason.
         processed = Calibration.focus_peak(frame, self.threshold, (0, 255, 0))
         self.frame_img.image = PILImage.fromarray(
@@ -111,20 +117,22 @@ class Calibration(App):
     @on(Select.Changed)
     def select_changed(self, event: Select.Changed) -> None:
         select = event.select
-        assert select.id == self.SRC_SELECT_ID
-
-        self.cam_index = select.value
-        self.cam = cv2.VideoCapture(self.cam_index)
+        if select.id == self.SRC_SELECT_ID:
+            self.cam_index = select.value
+            self.cam = cv2.VideoCapture(self.cam_index)
 
     def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
-        self.threshold += self.ADJ_MOUSE_DELTA
-        self.threshold = min(1, self.threshold)
-        self.query_one("#adjuster").value = f"{self.threshold:.2f}"
+        if self.focused.id == self.ADJUSTER_ID:
+            self.threshold += self.ADJ_MOUSE_DELTA
+            self.threshold = min(1, self.threshold)
+            self.query_one(f"#{self.ADJUSTER_ID}").value = f"{self.threshold:.2f}"
 
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
-        self.threshold -= self.ADJ_MOUSE_DELTA
-        self.threshold = max(0, self.threshold)
-        self.query_one("#adjuster").value = f"{self.threshold:.2f}"
+        if self.focused.id == self.ADJUSTER_ID:
+            self.threshold -= self.ADJ_MOUSE_DELTA
+            self.threshold = max(0, self.threshold)
+            self.query_one(f"#{self.ADJUSTER_ID}").value = f"{self.threshold:.2f}"
+
 
     def compose(self) -> ComposeResult:
         # Import config on startup
@@ -143,35 +151,34 @@ class Calibration(App):
         self.cam = cv2.VideoCapture(self.cam_index)
         cams = list(cv2ec.enumerate_cameras())
         cam_options = [(f"[{cam.index}] {cam.name}", cam.index) for cam in cams]
-
-
-        self.cam = cv2.VideoCapture(0)
-        cams = list(cv2ec.enumerate_cameras())
-        cam_options = [(f"[{cam.index}] {cam.name}", cam.index) for cam in cams]
+        mask_options = [("red", 0), ("green", 1), ("blue", 2)]
 
         yield Header()
         # NOTE(mabay): For some reason doing this same thing using CSS seems impossible.
         with Middle():
-            with Center():
-                yield Select(
-                    cam_options,
-                    prompt="Camera Source",
-                    classes="inline-widget",
-                    id=self.SRC_SELECT_ID,
-                )
+            with HorizontalGroup():
+                with Center():
+                    with Container(id="left-container"):
+                        yield Select(
+                            cam_options,
+                            prompt="Camera Source",
+                            classes="inline-widget",
+                            id=self.SRC_SELECT_ID,
+                        )
 
-            with Center():
-                self.frame_img = Image(id="main-frame")
-                yield self.frame_img
+                        self.frame_img = Image(id="main-frame")
+                        yield self.frame_img
 
-            with Center():
-                yield Input(
-                    value=str(self.threshold),
-                    placeholder="Threshold adjustment",
-                    id="adjuster",
-                    classes="inline-widget",
-                    validators=[Number(minimum=0.0, maximum=1.0)],
-                )
+                        yield Input(
+                            value=str(self.threshold),
+                            placeholder="Threshold adjustment",
+                            id=self.ADJUSTER_ID,
+                            classes="inline-widget",
+                            validators=[Number(minimum=0.0, maximum=1.0)],
+                        )
+
+                    # with Container(id="right-container"):
+                    #     yield Select(mask_options, prompt="Color Masks", allow_blank=False)
 
         yield Footer()
 
