@@ -2,7 +2,7 @@ import time
 import cv2
 
 # Open the default camera
-cam = cv2.VideoCapture(1)
+cam = cv2.VideoCapture(0)
 
 while True:
     ret, frame = cam.read()

@@ -63,7 +63,7 @@ class CameraProcessed(Widget):
         self.last_frame = frame.copy()
         self.focus_peak()
 
-    def watch_threshold(self) -> None:         # runs on adjuster changes
+    def watch_threshold(self) -> None:
         self.focus_peak()
 
     def focus_peak(self):
@@ -178,11 +178,6 @@ class CameraCalibration(App):
     Screen {
         layout: vertical;
     }
-
-    #adjusters {
-        height: auto;
-        width: 1fr;
-    }
     """
 
     def __init__(self, **kwargs):
@@ -218,20 +213,8 @@ class CameraCalibration(App):
 
         yield Header()
         yield HorizontalGroup(self.cam_orig, self.cam_processed, id="cam_imgs")
-        yield HorizontalGroup(
-            Adjusters("adj1", 0.0, 0.1, self.on_x_change, id="x"),
-            Adjusters("adj2", 0.0, 0.1, self.on_y_change, id="y"),
-            id="adjusters",
-        )
         yield Footer()
 
-    def on_x_change(self, value: float) -> None:
-        # Assign your effect here
-        pass
-
-    def on_y_change(self, value: float) -> None:
-        # Assign your effect here
-        pass
 
 
 if __name__ == "__main__":
