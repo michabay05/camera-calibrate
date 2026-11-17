@@ -15,7 +15,7 @@ from textual.events import MouseScrollUp, MouseScrollDown
 from textual.validation import Number
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Input, Select, Footer, Header, TabPane, TabbedContent
+from textual.widgets import Input, Label, Static, Select, Footer, Header, TabPane, TabbedContent
 from textual_image.widget import Image
 
 import yaml
@@ -28,9 +28,15 @@ TODO:
     [x] Exporting config
 
     [x] Resizing to smaller -> focus peaking -> resize to larger -> display
-    [ ] Make camera focus handle its own import and export
-    [ ] Make both tabs share a single camera context
-    [ ] Release camera on unmount
+    [x] Make camera focus handle its own import and export
+    [x] Make both tabs share a single camera context
+    [x] Release camera on unmount
+
+    [ ] Extract scrollable input to its own widget
+        - Makes it easy to re-use in the camera mask threshold range
+    [ ] Create a red and green mask (these will be the builtin ones)
+    [ ] Add way to add more masks easily
+        - Look at stopwatch example
 """
 
 DEFAULT_SAVE_DIR = "."
@@ -191,13 +197,52 @@ class CameraFocus(Widget):
             self.query_one(f"#{self.ADJUSTER_ID}").value = f"{self.threshold:.2f}"
 
 
+class MaskConfig(Widget):
+    MIN_ADJUSTER = "min-adjuster"
+    MAX_ADJUSTER = "max-adjuster"
+    DEFAULT_CSS = """
+    MaskConfig {
+        width: 50%;
+        align: center middle;
+        Label {
+            background: red;
+            width: auto;
+        }
+        Input {
+            width: 1fr;
+        }
+    }
+    """
+
+    def compose(self):
+        # TODO(mabay): Implement an Input validator that ensures $min < max$
+
+        yield Horizontal(
+            Label("Red"),
+            Input(
+                value="0.00",
+                placeholder="min",
+                type="number",
+                id=self.MIN_ADJUSTER,
+                validators=[Number(minimum=0.0, maximum=1.0)],
+            ),
+            Input(
+                value="1.00",
+                placeholder="max",
+                type="number",
+                id=self.MAX_ADJUSTER,
+                validators=[Number(minimum=0.0, maximum=1.0)],
+            )
+        )
+
+
 class CameraMask(Widget):
-    PREVIEW_HEIGHT = 200
+    PREVIEW_HEIGHT = 150
     PREVIEW_ASPECT_RATIO = 4/3
 
     DEFAULT_CSS = """
     #container {
-        width: 80%;
+        width: 50%;
         align: center middle;
         padding: 1;
         #orig-frame , #masked-frame {
@@ -221,6 +266,7 @@ class CameraMask(Widget):
                 self.orig_img,
                 self.masked_img,
             ),
+            MaskConfig(),
             id="container"
         )
 
@@ -251,11 +297,16 @@ class Calibration(App):
     def on_mount(self):
         self.set_interval(1/30, self.tick)
 
+    def on_unmount(self):
+        self.cam.release()
+
     def tick(self):
         ret, frame = self.cam.read()
         if not ret:
             return
 
+        # TODO(mabay): Find a better way to ensure that only one of these updates function
+        # is triggered.
         match self.query_one("#tabs-container").active:
             case "focus-tab":
                 self.camera_focus.frame_update(frame)
