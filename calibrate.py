@@ -1,11 +1,13 @@
 import os
-import time
-from typing import Callable
+import math
+import operator
+from typing import Any, Callable
 
 import cv2
 import cv2_enumerate_cameras as cv2ec
 from cv2_enumerate_cameras.camera_info import CameraInfo
 from PIL import Image as PILImage
+import numpy as np
 from numpy.typing import NDArray
 
 from textual import on
@@ -42,11 +44,35 @@ TODO:
 DEFAULT_SAVE_DIR = "."
 
 
+class ScrollableInput(Input):
+    def __init__(self, value: float = 0.0, range_min: float = 0.0, range_max: float = 1.0,
+        placeholder="num", type="number", id=None,
+        validators=[Number(minimum=0.0, maximum=1.0)], **kwargs):
+        super().__init__(
+            value=f"{value:.2f}",
+            placeholder=placeholder,
+            type=type,
+            id=id,
+            validators=validators,
+        )
+
+        self.range_min = min(range_min, range_max)
+        self.range_max = max(range_min, range_max)
+        self.delta = 0.01 * (self.range_max - self.range_min)
+
+    def on_mouse_scroll_up(self):
+        new_val = min(self.range_max, float(self.value) + self.delta)
+        self.value = f"{new_val:.2f}"
+
+    def on_mouse_scroll_down(self):
+        new_val = max(self.range_min, float(self.value) - self.delta)
+        self.value = f"{new_val:.2f}"
+
+
 class CameraFocus(Widget):
     SRC_SELECT_ID = "src-select"
     ADJUSTER_ID = "adjuster"
 
-    threshold = reactive(0.1)
     HIGHLIGHT_COLOR = (0, 255, 0)
     ADJ_MOUSE_DELTA = 0.01
 
@@ -76,6 +102,10 @@ class CameraFocus(Widget):
         super().__init__(**kwargs)
         self.update_cam = update_cam
         self.frame_img = Image(id="main-frame")
+        self.config = {
+            "camIndex": 0,
+            "threshold": 0.15
+        }
 
     @property
     def cfg_path(self):
@@ -94,23 +124,17 @@ class CameraFocus(Widget):
 
         self.notify(f"Info saved to {self.cfg_path}", title="Config")
 
-    def import_config(self):
-        # Default config
-        config = {}
-        if os.path.exists(self.cfg_path):
-            with open(self.cfg_path, "r") as f:
-                config = yaml.load(f, Loader=yaml.Loader)
-
-        self.cam_index = config.get("camIndex", 0)
-        self.threshold = config.get("threshold", 0.15)
-
     def compose(self) -> ComposeResult:
         available_cams = cv2ec.enumerate_cameras()
         cam_options = [(f"[{cam.index}] {cam.name}", cam.index)
             for cam in available_cams]
         cam_indices = [c[1] for c in cam_options]
 
-        self.import_config()
+        if os.path.exists(self.cfg_path):
+            with open(self.cfg_path, "r") as f:
+                self.config = yaml.load(f, Loader=yaml.Loader)
+
+        self.cam_index = self.config.get("camIndex", 0)
         if self.cam_index == 0:
             self.cam_index = cam_indices[0]
         elif self.cam_index not in cam_indices:
@@ -127,13 +151,11 @@ class CameraFocus(Widget):
                     prompt="Camera Source",
                     id=self.SRC_SELECT_ID,
                 ),
-                Input(
-                    value=f"{self.threshold:.2f}",
-                    placeholder="Threshold adjustment",
-                    type="number",
+                ScrollableInput(
+                    value=self.config.get("threshold", 0.15),
+                    placeholder="min",
                     id=self.ADJUSTER_ID,
-                    validators=[Number(minimum=0.0, maximum=1.0)],
-                )
+                ),
             ),
             id="container"
         )
@@ -175,26 +197,17 @@ class CameraFocus(Widget):
     def select_changed(self, event: Select.Changed) -> None:
         select = event.select
         if select.id == self.SRC_SELECT_ID:
-            self.cam_index = select.value
+            self.cam_index = int(select.value) if select.value else 0
             self.update_cam(self.cam_index)
 
     @on(Input.Changed)
     def input_changed(self, event: Input.Changed) -> None:
         self.threshold = float(event.input.value)
 
-    def inc_threshold(self, focused: Widget) -> None:
-        if focused.id == self.ADJUSTER_ID:
-            self.threshold += self.ADJ_MOUSE_DELTA
-            # Clamp to a maximum of 1 (aka. 100%)
-            self.threshold = min(1, self.threshold)
-            self.query_one(f"#{self.ADJUSTER_ID}").value = f"{self.threshold:.2f}"
-
-    def dec_threshold(self, focused: Widget) -> None:
-        if focused.id == self.ADJUSTER_ID:
-            self.threshold -= self.ADJ_MOUSE_DELTA
-            # Clamp to a minimum of 0 (aka. 0%)
-            self.threshold = max(0, self.threshold)
-            self.query_one(f"#{self.ADJUSTER_ID}").value = f"{self.threshold:.2f}"
+    def watch_threshold(self, threshold) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one(f"#{self.ADJUSTER_ID}").value = f"{threshold:.2f}"
 
 
 class MaskConfig(Widget):
@@ -203,6 +216,7 @@ class MaskConfig(Widget):
     DEFAULT_CSS = """
     MaskConfig {
         width: 50%;
+        height: auto;
         align: center middle;
         Label {
             background: red;
@@ -219,21 +233,21 @@ class MaskConfig(Widget):
 
         yield Horizontal(
             Label("Red"),
-            Input(
-                value="0.00",
-                placeholder="min",
-                type="number",
-                id=self.MIN_ADJUSTER,
-                validators=[Number(minimum=0.0, maximum=1.0)],
+            ScrollableInput(
+                value=0.0,
+                placeholder="min_l",
             ),
-            Input(
-                value="1.00",
-                placeholder="max",
-                type="number",
-                id=self.MAX_ADJUSTER,
-                validators=[Number(minimum=0.0, maximum=1.0)],
-            )
+            ScrollableInput(
+                value=0.0,
+                placeholder="min_a",
+            ),
+            ScrollableInput(
+                value=0.0,
+                placeholder="min_b",
+            ),
         )
+
+
 
 
 class CameraMask(Widget):
@@ -245,7 +259,7 @@ class CameraMask(Widget):
         width: 50%;
         align: center middle;
         padding: 1;
-        #orig-frame , #masked-frame {
+        #orig-frame, #masked-frame {
             width: 1fr;
             height: auto;
             margin: 1;
@@ -256,13 +270,20 @@ class CameraMask(Widget):
     def __init__(self, update_cam: Callable[[int], None], **kwargs):
         super().__init__(**kwargs)
         self.update_cam = update_cam
-
-    def compose(self):
         self.orig_img = Image(id="orig-frame")
         self.masked_img = Image(id="masked-frame")
+        self.lab_data: dict[str, Any] = {
+            "red": {
+                # "min": (0, 128, 128),
+                # "max": (255, 128, 128),
+                "min": (40, 160, 130),
+                "max": (255, 255, 205),
+            }
+        }
 
+    def compose(self):
         yield Container(
-            Horizontal(
+            HorizontalGroup(
                 self.orig_img,
                 self.masked_img,
             ),
@@ -272,12 +293,98 @@ class CameraMask(Widget):
 
     def frame_update(self, frame):
         fh, _ = frame.shape[:2]
-        resized_frame = cv2.resize(frame, (int(self.PREVIEW_ASPECT_RATIO*fh), fh),
+        preview_size = (int(self.PREVIEW_ASPECT_RATIO*fh), fh)
+        resized_frame = cv2.resize(frame, preview_size,
             interpolation=cv2.INTER_NEAREST)
+        resized_clean = resized_frame.copy()
+        annotated_image = resized_frame.copy()
+
+        resized_clean = cv2.GaussianBlur(resized_clean, (3, 3), 3)
+        # Convert to LAB space
+        resized_clean = cv2.cvtColor(resized_clean, cv2.COLOR_BGR2LAB)
+
+        # If we're calling target_contours() multiple times, some args will
+        # be the same. Let's put them here to re-use them.
+        contour_args = {
+            'open_kernel': np.ones((3, 3), np.uint8),
+            'close_kernel': np.ones((3, 3), np.uint8),
+        }
+        # extract the LAB threshold
+        target_color = "red"
+        masks = {}
+
+        threshold = (tuple(self.lab_data[target_color][key]) for key in ['min', 'max'])
+        masks.setdefault(target_color, {})
+        # run contour detection
+        target_contours = self.color_contour_detection(
+            resized_clean,
+            tuple(threshold),  # type: ignore
+            save_to_dict=masks[target_color],
+            **contour_args
+        )
+        biggest_contour, biggest_contour_area = target_contours[0] if target_contours else (None, 0)
+        # did we detect something of interest?
+        detected = biggest_contour_area > 300
+
+        # draw annotations of detected contours
+        target_color_color = (255, 0, 0)
+        black_color = (0, 0, 0)
+
+        if detected:
+            self.draw_fitted_rect(annotated_image, biggest_contour, target_color_color)
+            self.draw_text(annotated_image, target_color_color, target_color)
+        else:
+            self.draw_text(annotated_image, black_color, 'None')
+
+
         self.orig_img.image = PILImage.fromarray(
             cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
         self.masked_img.image = PILImage.fromarray(
-            cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
+            cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+
+    @staticmethod
+    def color_contour_detection(
+        frame,
+        threshold: tuple[tuple[int, int, int], tuple[int, int, int]],
+        open_kernel: NDArray | None = None,
+        close_kernel: NDArray | None = None,
+        save_to_dict=None,
+    ):
+        if save_to_dict is None:
+            save_to_dict = {}
+        # Image Processing
+        # mask the colors we want
+        threshold = [tuple(li) for li in threshold]  # cast to tuple to make cv2 happy
+        frame_mask = cv2.inRange(frame, *threshold)  # type: ignore
+        save_to_dict['mask'] = frame_mask
+        # Perform an opening and closing operation on the mask
+        # https://youtu.be/1owu136z1zI?feature=shared&t=34
+        frame = frame_mask.copy()
+        if open_kernel is not None:
+            frame = cv2.morphologyEx(frame, cv2.MORPH_OPEN, open_kernel)
+        if close_kernel is not None:
+            frame = cv2.morphologyEx(frame, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        # find contours (blobs) in the mask
+        contours = cv2.findContours(frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[-2]
+        save_to_dict['contours'] = contours
+        areas = [math.fabs(cv2.contourArea(contour)) for contour in contours]
+        # zip to provide pairs of (contour, area)
+        zipped = zip(contours, areas)
+        # return largest-to-smallest contour
+        return sorted(zipped, key=operator.itemgetter(1), reverse=True)
+
+    @staticmethod
+    def draw_fitted_rect(img, contour, color):
+        # draw rotated fitted rectangle around contour
+        rect = cv2.minAreaRect(contour)
+        box = np.int_(cv2.boxPoints(rect))
+        cv2.drawContours(img, [box], -1, color, 2)
+
+    @staticmethod
+    def draw_text(img, color, name):
+        # Print the detected color on the screen
+        cv2.putText(img, f"Color: {name}", (10, img.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
 
 
 class Calibration(App):
@@ -303,15 +410,14 @@ class Calibration(App):
     def tick(self):
         ret, frame = self.cam.read()
         if not ret:
+            assert False, (ret, frame.shape)
             return
 
-        # TODO(mabay): Find a better way to ensure that only one of these updates function
-        # is triggered.
+        # TODO(mabay): Find a better way to ensure that only one of these updates
+        # function is triggered.
         match self.query_one("#tabs-container").active:
-            case "focus-tab":
-                self.camera_focus.frame_update(frame)
-            case "mask-tab":
-                self.camera_mask.frame_update(frame)
+            case "focus-tab": self.camera_focus.frame_update(frame)
+            case "mask-tab" : self.camera_mask.frame_update(frame)
 
     def update_camera(self, cam_index: int) -> None:
         self.cam.release()
@@ -330,13 +436,6 @@ class Calibration(App):
                 yield self.camera_mask
         yield Footer()
 
-    def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
-        if self.focused:
-            self.camera_focus.inc_threshold(self.focused)
-
-    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
-        if self.focused:
-            self.camera_focus.dec_threshold(self.focused)
 
 if __name__ == "__main__":
     Calibration().run()
